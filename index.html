@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>YouTube Relay</title>
+    <style>
+        html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 14px/1.5 sans-serif; overflow: hidden; }
+        #player { width: 100vw; height: 100vh; }
+        #status { padding: 16px; }
+    </style>
+</head>
+<body>
+    <!--
+        YouTube relay for the FiveM loadscreen.
+        FiveM serves loadscreens from nui://, which YouTube rejects (error 153).
+        Host this file on any https site (e.g. GitHub Pages) and put its URL in
+        config.js -> music.relayUrl. The loadscreen embeds this page and controls
+        the player through postMessage.
+    -->
+    <div id="player"></div>
+    <script>
+    (function () {
+        var parentWin = window.parent;
+        if (parentWin === window) {
+            // Opened directly in a browser: just confirm the page is online.
+            document.body.innerHTML = '<div id="status">YouTube relay is online. Put this page\'s URL in config.js &rarr; music.relayUrl.</div>';
+            return;
+        }
+
+        var player = null;
+        var ready = false;
+        var ALLOWED = {
+            loadVideoById: 1, loadPlaylist: 1, playVideo: 1, pauseVideo: 1, stopVideo: 1,
+            setVolume: 1, mute: 1, unMute: 1, nextVideo: 1, previousVideo: 1, seekTo: 1, setShuffle: 1
+        };
+
+        function send(msg) {
+            msg.__ytRelay = 1;
+            // The loadscreen's origin is nui://..., which can't be targeted; the payload is only playback state.
+            parentWin.postMessage(msg, '*');
+        }
+        function snapshot() {
+            if (!ready) return null;
+            try {
+                var d = player.getVideoData() || {};
+                return {
+                    state: player.getPlayerState(),
+                    time: player.getCurrentTime() || 0,
+                    playlist: player.getPlaylist() || [],
+                    playlistIndex: player.getPlaylistIndex(),
+                    videoData: { title: d.title, author: d.author, video_id: d.video_id }
+                };
+            } catch (e) {
+                return null;
+            }
+        }
+
+        window.addEventListener('message', function (e) {
+            if (e.source !== parentWin) return;
+            var m = e.data;
+            if (!m || m.__ytRelay !== 1 || m.type !== 'call' || !ready || !ALLOWED[m.method]) return;
+            try { player[m.method].apply(player, Array.isArray(m.args) ? m.args : []); } catch (err) { /* ignore */ }
+        });
+
+        window.onYouTubeIframeAPIReady = function () {
+            player = new YT.Player('player', {
+                width: '100%',
+                height: '100%',
+                playerVars: { autoplay: 1, controls: 0, disablekb: 1, fs: 0, iv_load_policy: 3, playsinline: 1, rel: 0, origin: location.origin },
+                events: {
+                    onReady: function () { ready = true; send({ type: 'ready', state: snapshot() }); },
+                    onStateChange: function (e) { send({ type: 'stateChange', data: e.data, state: snapshot() }); },
+                    onError: function (e) { send({ type: 'error', data: e.data, state: snapshot() }); }
+                }
+            });
+        };
+
+        // Keep the loadscreen's cached time/playlist position fresh.
+        setInterval(function () {
+            var s = snapshot();
+            if (s) send({ type: 'state', state: s });
+        }, 500);
+
+        var script = document.createElement('script');
+        script.src = 'https://www.youtube.com/iframe_api';
+        script.onerror = function () { send({ type: 'apiError' }); };
+        document.head.appendChild(script);
+    })();
+    </script>
+</body>
+</html>
